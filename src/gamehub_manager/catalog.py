@@ -51,7 +51,8 @@ def _read_source(source: str) -> str:
             raise ValueError("Catalog is too large; the maximum size is 1 MiB.")
         return data.decode("utf-8")
 
-    if parsed.scheme:
+    # A single-character "scheme" is a Windows drive letter (e.g. C:\...), not a URL scheme.
+    if parsed.scheme and len(parsed.scheme) > 1:
         raise ValueError("Catalog source must be a local JSON file or an HTTP(S) JSON URL.")
 
     return Path(source).expanduser().read_text(encoding="utf-8")
