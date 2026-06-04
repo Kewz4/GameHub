@@ -8,7 +8,7 @@ from uuid import uuid4
 
 @dataclass(slots=True)
 class GameEntry:
-    """A library entry for a legally downloadable game."""
+    """A library entry for a downloadable game."""
 
     title: str
     urls: list[str]
@@ -22,28 +22,31 @@ class GameEntry:
     def from_dict(cls, data: dict[str, Any]) -> "GameEntry":
         return cls(
             title=str(data.get("title", "Untitled")),
-            urls=[str(url) for url in data.get("urls", [])],
+            urls=[str(u) for u in data.get("urls", [])],
             password=str(data.get("password", "")),
             game_id=str(data.get("game_id", uuid4().hex)),
             status=str(data.get("status", "queued")),
-            download_paths=[str(path) for path in data.get("download_paths", [])],
+            download_paths=[str(p) for p in data.get("download_paths", [])],
             install_path=str(data.get("install_path", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "game_id": self.game_id,
-            "title": self.title,
-            "urls": self.urls,
-            "password": self.password,
-            "status": self.status,
+            "game_id":        self.game_id,
+            "title":          self.title,
+            "urls":           self.urls,
+            "password":       self.password,
+            "status":         self.status,
             "download_paths": self.download_paths,
-            "install_path": self.install_path,
+            "install_path":   self.install_path,
         }
 
     @property
     def safe_folder_name(self) -> str:
-        return "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in self.title).strip() or self.game_id
+        return (
+            "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in self.title).strip()
+            or self.game_id
+        )
 
     def download_dir(self, root: Path) -> Path:
         return root / "downloads" / self.safe_folder_name
