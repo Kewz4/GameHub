@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gamehub-manager"
+version = "0.1.0"
+description = "A lawful game library manager and installer for user-provided download URLs."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "GameHub Contributors"}]
+license = {text = "MIT"}
+
+[project.scripts]
+gamehub-manager = "gamehub_manager.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
