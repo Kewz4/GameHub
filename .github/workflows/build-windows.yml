@@ -24,10 +24,6 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip install requests beautifulsoup4 selenium webdriver-manager
 
-      - name: Install Chrome for Selenium
-        run: |
-          choco install googlechrome -y
-
       - name: Run tests
         run: python -m pytest
 
