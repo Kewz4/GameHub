@@ -443,10 +443,18 @@ class CatalogView(tk.Frame):
                  bg=BG, fg=SUB, font=("Helvetica", 10), anchor="w").pack(
                      fill="x", padx=20, pady=(0, 12))
 
+        # Built-in catalog shortcut
+        builtin_row = tk.Frame(self, bg=BG)
+        builtin_row.pack(fill="x", padx=20, pady=(0, 8))
+        _Btn(builtin_row, "⚡  Load Built-in Catalog", self._load_builtin,
+             color=ACCENT, font_size=10).pack(side="left")
+        tk.Label(builtin_row, text="  15 free & open-source games, ready to download",
+                 bg=BG, fg=SUB, font=("Helvetica", 9)).pack(side="left", padx=8)
+
         # Source bar
         bar = tk.Frame(self, bg=PANEL, padx=16, pady=12)
         bar.pack(fill="x", padx=20, pady=(0, 12))
-        tk.Label(bar, text="Source", bg=PANEL, fg=SUB,
+        tk.Label(bar, text="Or load a custom catalog", bg=PANEL, fg=SUB,
                  font=("Helvetica", 9)).pack(anchor="w")
         src_row = tk.Frame(bar, bg=PANEL)
         src_row.pack(fill="x", pady=(4, 0))
@@ -454,7 +462,7 @@ class CatalogView(tk.Frame):
         _Input(src_row, textvariable=self._src_var).pack(
             side="left", fill="x", expand=True, padx=(0, 8))
         _Btn(src_row, "Browse", self._browse, color=MUTED).pack(side="left", padx=(0, 8))
-        _Btn(src_row, "Load",   self._load,   color=ACCENT).pack(side="left")
+        _Btn(src_row, "Load",   self._load,   color=MUTED).pack(side="left")
 
         self._count = tk.Label(self, text="", bg=BG, fg=SUB, font=("Helvetica", 10))
         self._count.pack(anchor="w", padx=20, pady=(0, 8))
@@ -462,6 +470,28 @@ class CatalogView(tk.Frame):
         self._scroll = _ScrollFrame(self, bg=BG)
         self._scroll.pack(fill="both", expand=True, padx=20)
         self._rows_frame = self._scroll.inner
+
+        # Auto-load built-in catalog on startup
+        self.after(100, self._load_builtin)
+
+    def _load_builtin(self):
+        try:
+            from manager import get_builtin_catalog
+            raw = get_builtin_catalog()
+        except Exception as exc:
+            msgbox.showerror("GameHub", f"Could not load built-in catalog:\n{exc}")
+            return
+        self._items = [
+            {
+                "title":       g["title"],
+                "urls":        g.get("urls", []),
+                "description": g.get("description", ""),
+                "password":    g.get("password", ""),
+            }
+            for g in raw
+        ]
+        self._render_items()
+        self.app.post_log(f"Built-in catalog loaded — {len(self._items)} title(s).")
 
     def _browse(self):
         path = filedialog.askopenfilename(
