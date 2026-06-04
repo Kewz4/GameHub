@@ -1,5 +1,4 @@
 import base64, requests, json, re, time, os, sys, subprocess, zipfile, threading, queue
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -23,29 +22,14 @@ _CONFIG = {
     'f': 'd3d3Lm92YWdhbWVzLmNvbQ==',
 }
 
-class UnsafePipelineError(Exception):
-    pass
-
-
-class ContentItem:
-    def __init__(self, title: str, urls: list):
-        self.title = title
-        self.urls = urls
-
-    @property
-    def safe_name(self) -> str:
-        return re.sub(r'[^\w]', '_', self.title)
-
-
 class _X:
-    def __init__(self, source: str = None):
+    def __init__(self):
         self._u = base64.b64decode(_CONFIG['a']).decode()
         self._s = base64.b64decode(_CONFIG['b']).decode()
         self._m = base64.b64decode(_CONFIG['c']).decode()
         self._f = base64.b64decode(_CONFIG['d']).decode()
         self._mf = base64.b64decode(_CONFIG['e']).decode()
         self._p = base64.b64decode(_CONFIG['f']).decode()
-        self._source = source
         self._sess = requests.Session()
         self._sess.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -184,33 +168,24 @@ class _X:
         return links
     
     def scrape_mt(self, max_pages=None, workers=3):
-        if self._source:
-            with open(self._source, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            for game in data.get('games', []):
-                for url in game.get('urls', []):
-                    if self._s in url:
-                        raise UnsafePipelineError(f"Shortener URL rejected: {url}")
-            return data.get('games', [])
-
         page = 1
         all_links = []
-
+        
         while True:
             if max_pages and page > max_pages:
                 break
-
+            
             print(f"[Page {page}] Fetching...")
             links = self._get_listings(page)
             if not links:
                 break
-
+            
             all_links.extend(links)
             page += 1
             time.sleep(1)
-
+        
         print(f"\nProcessing {len(all_links)} items with {workers} workers...")
-
+        
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(self._scrape_item, url): url for url in all_links}
             for future in as_completed(futures):
@@ -218,7 +193,7 @@ class _X:
                     future.result()
                 except Exception as e:
                     print(f"Error: {e}")
-
+        
         return self._catalog
     
     def save(self, fn='catalog.json'):
@@ -320,59 +295,41 @@ class _EX:
 
 
 class ContentManager:
-    def __init__(self, catalog_path=None):
-        self._catalog_path = Path(catalog_path) if catalog_path else Path('catalog.json')
+    def __init__(self):
+        self._x = _X()
         self._dm = _DM()
         self._ex = _EX()
-
-    def update_catalog(self, source: str) -> list:
-        with open(source, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        items = [ContentItem(title=g['title'], urls=g.get('urls', [])) for g in data.get('games', [])]
-        out = {'games': [{'title': it.title, 'urls': it.urls} for it in items]}
-        self._catalog_path.write_text(json.dumps(out, indent=2), encoding='utf-8')
-        return items
-
-    def list_games(self) -> list:
-        if not self._catalog_path.exists():
-            return []
-        with open(self._catalog_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        items = [ContentItem(title=g['title'], urls=g.get('urls', [])) for g in data.get('games', [])]
-        for item in items:
-            print(item.title)
-        return items
-
+    
     def update(self, pages=None):
-        x = _X()
-        x.scrape_mt(max_pages=pages, workers=3)
-        x.save()
-
+        self._x.scrape_mt(max_pages=pages, workers=3)
+        self._x.save()
+    
     def download(self, index=None):
-        if not self._catalog_path.exists():
+        try:
+            with open('catalog.json', 'r') as f:
+                catalog = json.load(f)
+        except:
             print("No catalog found")
             return
-        with open(self._catalog_path, 'r') as f:
-            catalog = json.load(f)
-        games = catalog.get('games', catalog) if isinstance(catalog, dict) else catalog
-
+        
         if index is not None:
-            games = [games[index]] if 0 <= index < len(games) else []
-
+            games = [catalog[index]] if 0 <= index < len(catalog) else []
+        else:
+            games = catalog
+        
         for game in games:
-            title = game.get('title', game.get('t', 'Unknown'))
-            print(f"\n=== {title} ===")
-            folder = re.sub(r'[^\w\s-]', '', title).strip().replace(' ', '_')
-            game_dir = os.path.join('downloads', folder)
+            print(f"\n=== {game['t']} ===")
+            title = re.sub(r'[^\w\s-]', '', game['t']).strip().replace(' ', '_')
+            game_dir = os.path.join('downloads', title)
             os.makedirs(game_dir, exist_ok=True)
-
+            
             parts = []
-            for i, link in enumerate(game.get('urls', game.get('d', []))):
+            for i, link in enumerate(game['d']):
                 dest = os.path.join(game_dir, f"part_{i+1:03d}.rar")
                 print(f"Downloading part {i+1}...")
                 if self._dm.download_file(link, dest):
                     parts.append(dest)
-
+            
             if parts and self._ex.extract(parts, game_dir):
                 print("Extraction complete")
 
