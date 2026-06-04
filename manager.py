@@ -118,16 +118,17 @@ class _X:
             except:
                 pass
     
-    def _scrape_item(self, item_url):
-        print(f"[Thread] Processing: {item_url}")
+    def _scrape_item(self, item_url, progress_cb=None):
+        _log = progress_cb or print
+        _log(f"[Scraping] {item_url}")
         html = self._g(item_url)
         if not html:
             return
-        
+
         soup = BeautifulSoup(html, 'html.parser')
         title = soup.find('h1', class_='entry-title')
         title = title.get_text(strip=True) if title else "Unknown"
-        
+
         # Find download section
         dl_link = None
         for a in soup.find_all('a'):
@@ -135,13 +136,13 @@ class _X:
             if 'mediafire' in text or self._mf in a.get('href', ''):
                 dl_link = a['href']
                 break
-        
+
         if not dl_link:
             return
-        
-        print(f"  Bypassing protection...")
+
+        _log(f"[Bypassing] {title}")
         final_links = self._bypass_chain(dl_link)
-        
+
         if final_links:
             item_data = {
                 't': title,
@@ -151,7 +152,7 @@ class _X:
             }
             with self._lock:
                 self._catalog.append(item_data)
-                print(f"  Found {len(final_links)} parts")
+                _log(f"[Found] {title} — {len(final_links)} part(s)")
     
     def _get_listings(self, page=1):
         url = f"{self._u}/page/{page}/" if page > 1 else self._u
@@ -167,33 +168,35 @@ class _X:
                 links.append(a['href'])
         return links
     
-    def scrape_mt(self, max_pages=None, workers=3):
+    def scrape_mt(self, max_pages=None, workers=3, progress_cb=None):
+        _log = progress_cb or print
         page = 1
         all_links = []
-        
+
         while True:
             if max_pages and page > max_pages:
                 break
-            
-            print(f"[Page {page}] Fetching...")
+            _log(f"[Page {page}] Fetching listings…")
             links = self._get_listings(page)
             if not links:
                 break
-            
             all_links.extend(links)
             page += 1
             time.sleep(1)
-        
-        print(f"\nProcessing {len(all_links)} items with {workers} workers...")
-        
+
+        _log(f"[Scraper] Processing {len(all_links)} titles with {workers} workers…")
+
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(self._scrape_item, url): url for url in all_links}
+            futures = {
+                executor.submit(self._scrape_item, url, progress_cb): url
+                for url in all_links
+            }
             for future in as_completed(futures):
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"Error: {e}")
-        
+                    _log(f"[Error] {e}")
+
         return self._catalog
     
     def save(self, fn='catalog.json'):
@@ -403,8 +406,8 @@ class ContentManager:
         self._dm = _DM()
         self._ex = _EX()
     
-    def update(self, pages=None):
-        self._x.scrape_mt(max_pages=pages, workers=3)
+    def update(self, pages=None, progress_cb=None):
+        self._x.scrape_mt(max_pages=pages, workers=3, progress_cb=progress_cb)
         self._x.save()
     
     def download(self, index=None):

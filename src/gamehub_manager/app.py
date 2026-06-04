@@ -443,13 +443,18 @@ class CatalogView(tk.Frame):
                  bg=BG, fg=SUB, font=("Helvetica", 10), anchor="w").pack(
                      fill="x", padx=20, pady=(0, 12))
 
-        # Built-in catalog shortcut
-        builtin_row = tk.Frame(self, bg=BG)
-        builtin_row.pack(fill="x", padx=20, pady=(0, 8))
-        _Btn(builtin_row, "⚡  Load Built-in Catalog", self._load_builtin,
-             color=ACCENT, font_size=10).pack(side="left")
-        tk.Label(builtin_row, text="  15 free & open-source games, ready to download",
-                 bg=BG, fg=SUB, font=("Helvetica", 9)).pack(side="left", padx=8)
+        # Action bar
+        action_row = tk.Frame(self, bg=BG)
+        action_row.pack(fill="x", padx=20, pady=(0, 12))
+
+        _Btn(action_row, "⚡  Built-in Catalog", self._load_builtin,
+             color=ACCENT, font_size=10).pack(side="left", padx=(0, 8))
+        self._scrape_btn = _Btn(action_row, "🔍  Scrape Live", self._start_scrape,
+                                 color="#059669", font_size=10)
+        self._scrape_btn.pack(side="left", padx=(0, 8))
+        self._scrape_status = tk.Label(action_row, text="", bg=BG, fg=YELLOW,
+                                        font=("Helvetica", 9))
+        self._scrape_status.pack(side="left", padx=8)
 
         # Source bar
         bar = tk.Frame(self, bg=PANEL, padx=16, pady=12)
@@ -492,6 +497,79 @@ class CatalogView(tk.Frame):
         ]
         self._render_items()
         self.app.post_log(f"Built-in catalog loaded — {len(self._items)} title(s).")
+
+    def _start_scrape(self):
+        try:
+            from manager import _X
+        except Exception as exc:
+            msgbox.showerror("GameHub", f"Could not import manager.py:\n{exc}")
+            return
+
+        self._scrape_btn.config(text="⏳  Scraping…", cursor="watch")
+        self._scrape_status.config(text="Starting…")
+        self._items = []
+        self._scraper = _X()
+        threading.Thread(target=self._scrape_worker, daemon=True).start()
+
+    def _scrape_worker(self):
+        try:
+            catalog = self._scraper.scrape_mt(progress_cb=self._on_scrape_progress)
+            # Convert manager.py format → display format
+            items = [
+                {
+                    "title":       g.get("t", "Unknown"),
+                    "urls":        g.get("d", []),
+                    "description": g.get("u", ""),
+                    "password":    g.get("p", ""),
+                }
+                for g in catalog
+            ]
+            self.after(0, self._scrape_done, items)
+        except Exception as exc:
+            self.after(0, self._scrape_error, str(exc))
+
+    def _on_scrape_progress(self, msg: str):
+        # Called from background threads — schedule on main thread
+        self.after(0, self._apply_scrape_progress, msg)
+        # Also refresh catalog list live when a game is found
+        if msg.startswith("[Found]"):
+            self.after(0, self._live_refresh)
+
+    def _apply_scrape_progress(self, msg: str):
+        short = msg[:70] + ("…" if len(msg) > 70 else "")
+        self._scrape_status.config(text=short)
+        self.app.post_log(msg)
+
+    def _live_refresh(self):
+        catalog = self._scraper._catalog[:]  # snapshot
+        items = [
+            {
+                "title":       g.get("t", "Unknown"),
+                "urls":        g.get("d", []),
+                "description": g.get("u", ""),
+                "password":    g.get("p", ""),
+            }
+            for g in catalog
+        ]
+        self._items = items
+        self._render_items()
+
+    def _scrape_done(self, items: list):
+        self._items = items
+        self._render_items()
+        self._scrape_btn.config(text="🔍  Scrape Live", cursor="hand2")
+        self._scrape_status.config(text=f"Done — {len(items)} game(s) found")
+        self.app.post_log(f"Scrape complete — {len(items)} game(s) found.")
+        # Auto-save to catalog.json
+        try:
+            self._scraper.save()
+        except Exception:
+            pass
+
+    def _scrape_error(self, msg: str):
+        self._scrape_btn.config(text="🔍  Scrape Live", cursor="hand2")
+        self._scrape_status.config(text=f"Error: {msg[:60]}")
+        self.app.post_log(f"[Scrape error] {msg}")
 
     def _browse(self):
         path = filedialog.askopenfilename(
