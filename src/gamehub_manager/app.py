@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from gamehub_manager.builtin_catalog import BUILTIN_CATALOG
 from gamehub_manager.catalog import load_catalog
 from gamehub_manager.downloader import download_many
 from gamehub_manager.installer import extract_archive, first_archive
@@ -480,12 +481,6 @@ class CatalogView(tk.Frame):
         self.after(100, self._load_builtin)
 
     def _load_builtin(self):
-        try:
-            from manager import get_builtin_catalog
-            raw = get_builtin_catalog()
-        except Exception as exc:
-            msgbox.showerror("GameHub", f"Could not load built-in catalog:\n{exc}")
-            return
         self._items = [
             {
                 "title":       g["title"],
@@ -493,7 +488,7 @@ class CatalogView(tk.Frame):
                 "description": g.get("description", ""),
                 "password":    g.get("password", ""),
             }
-            for g in raw
+            for g in BUILTIN_CATALOG
         ]
         self._render_items()
         self.app.post_log(f"Built-in catalog loaded — {len(self._items)} title(s).")

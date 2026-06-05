@@ -27,7 +27,7 @@ jobs:
         run: python -m pytest
 
       - name: Build GUI executable
-        run: pyinstaller --noconfirm --onefile --windowed --paths src --name GameHubManager src/gamehub_manager/app.py
+        run: pyinstaller --noconfirm --onefile --windowed --paths src --paths . --add-data "manager.py;." --name GameHubManager src/gamehub_manager/app.py
 
       - name: Build CLI executable
         run: pyinstaller --noconfirm --onefile --paths src --name GameHubManagerCLI manager.py
