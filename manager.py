@@ -37,111 +37,155 @@ class _X:
         self._catalog = []
         self._lock = threading.Lock()
         
-    def _g(self, url, retries=3):
-        for _ in range(retries):
+    def _g(self, url, retries=3, _log=None):
+        log = _log or print
+        for attempt in range(1, retries + 1):
             try:
                 r = self._sess.get(url, timeout=30)
                 r.raise_for_status()
+                log(f"[HTTP {r.status_code}] {url}")
                 return r.text
-            except:
-                time.sleep(2)
+            except Exception as e:
+                log(f"[HTTP fail attempt {attempt}/{retries}] {url} — {e}")
+                if attempt < retries:
+                    time.sleep(2)
+        log(f"[HTTP gave up] {url}")
         return None
     
-    def _bypass_chain(self, url):
+    def _bypass_chain(self, url, _log=None):
         """Full bypass: shrinkme -> mrproblogger -> filecrypt"""
+        log = _log or print
         try:
             # Step 1: shrinkme.click
+            log(f"[Bypass-1] shrinkme → {url}")
             r = self._sess.get(url, allow_redirects=True)
+            log(f"[Bypass-1] HTTP {r.status_code}, waiting 12s…")
             time.sleep(12)
-            
+
             soup = BeautifulSoup(r.text, 'html.parser')
             continue_btn = soup.find('a', class_=re.compile('btn|continue'))
-            if continue_btn and continue_btn.get('href'):
-                next_url = continue_btn['href']
-                if not next_url.startswith('http'):
-                    next_url = 'https://' + self._m + next_url
-                
-                # Step 2: mrproblogger
-                time.sleep(12)
-                r2 = self._sess.get(next_url)
-                soup2 = BeautifulSoup(r2.text, 'html.parser')
-                
-                for a in soup2.find_all('a'):
-                    txt = a.get_text(strip=True).lower()
-                    if 'get' in txt or 'link' in txt:
-                        filecrypt_url = a['href']
-                        return self._solve_filecrypt(filecrypt_url)
+            if not continue_btn:
+                log(f"[Bypass-1] No continue button found. Page title: "
+                    f"{soup.find('title') and soup.find('title').get_text()!r}")
+                return None
+
+            next_url = continue_btn['href']
+            if not next_url.startswith('http'):
+                next_url = 'https://' + self._m + next_url
+            log(f"[Bypass-2] mrproblogger → {next_url}")
+
+            # Step 2: mrproblogger
+            time.sleep(12)
+            r2 = self._sess.get(next_url)
+            log(f"[Bypass-2] HTTP {r2.status_code}")
+            soup2 = BeautifulSoup(r2.text, 'html.parser')
+
+            for a in soup2.find_all('a'):
+                txt = a.get_text(strip=True).lower()
+                if 'get' in txt or 'link' in txt:
+                    filecrypt_url = a['href']
+                    log(f"[Bypass-3] filecrypt → {filecrypt_url}")
+                    return self._solve_filecrypt(filecrypt_url, _log=log)
+
+            log(f"[Bypass-2] No filecrypt link found. "
+                f"Links on page: {[a.get_text(strip=True) for a in soup2.find_all('a')][:6]}")
             return None
         except Exception as e:
-            print(f"Bypass error: {e}")
+            log(f"[Bypass error] {e}")
             return None
     
-    def _solve_filecrypt(self, url):
-        """Solve FileCrypt circle captcha with Selenium"""
+    def _solve_filecrypt(self, url, _log=None):
+        """Solve FileCrypt circle captcha with Selenium."""
+        log = _log or print
         options = Options()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
-        
+        driver = None
         try:
+            log(f"[FileCrypt] Launching Chrome → {url}")
             driver = webdriver.Chrome(options=options)
             driver.get(url)
+            log(f"[FileCrypt] Page title: {driver.title!r}")
             time.sleep(3)
-            
+
             # Find and click circles
-            elements = driver.find_elements(By.CSS_SELECTOR, 'circle, .circle, [class*="circle"], .captcha-circle')
+            elements = driver.find_elements(
+                By.CSS_SELECTOR,
+                'circle, .circle, [class*="circle"], .captcha-circle'
+            )
+            log(f"[FileCrypt] Circle elements found: {len(elements)}")
             for elem in elements:
                 try:
                     elem.click()
+                    log("[FileCrypt] Clicked circle element, waiting 2s…")
                     time.sleep(2)
                     break
-                except:
+                except Exception:
                     continue
-            
+
             time.sleep(3)
-            
-            # Extract links
+
+            # Extract MediaFire links
             links = []
             for a in driver.find_elements(By.TAG_NAME, 'a'):
                 href = a.get_attribute('href')
                 if href and self._mf in href:
                     links.append(href)
-            
+
+            log(f"[FileCrypt] MediaFire links extracted: {len(links)}")
+            if not links:
+                # Log all hrefs so we can inspect
+                all_hrefs = [
+                    a.get_attribute('href')
+                    for a in driver.find_elements(By.TAG_NAME, 'a')
+                    if a.get_attribute('href')
+                ]
+                log(f"[FileCrypt] All hrefs on page: {all_hrefs[:10]}")
             return links
         except Exception as e:
-            print(f"FileCrypt error: {e}")
+            log(f"[FileCrypt error] {e}")
             return []
         finally:
-            try:
-                driver.quit()
-            except:
-                pass
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
     
     def _scrape_item(self, item_url, progress_cb=None):
         _log = progress_cb or print
         _log(f"[Scraping] {item_url}")
-        html = self._g(item_url)
+        html = self._g(item_url, _log=_log)
         if not html:
+            _log(f"[Skip] No HTML: {item_url}")
             return
 
         soup = BeautifulSoup(html, 'html.parser')
-        title = soup.find('h1', class_='entry-title')
-        title = title.get_text(strip=True) if title else "Unknown"
+        title_el = soup.find('h1', class_='entry-title')
+        title = title_el.get_text(strip=True) if title_el else "Unknown"
+        _log(f"[Item] Title: {title!r}")
 
-        # Find download section
+        # Find download link
         dl_link = None
-        for a in soup.find_all('a'):
+        all_hrefs = []
+        for a in soup.find_all('a', href=True):
+            href = a.get('href', '')
+            all_hrefs.append(href)
             text = a.get_text(strip=True).lower()
-            if 'mediafire' in text or self._mf in a.get('href', ''):
-                dl_link = a['href']
+            if 'mediafire' in text or self._mf in href:
+                dl_link = href
                 break
 
         if not dl_link:
+            _log(f"[Skip] No MediaFire link for {title!r}. "
+                 f"Total hrefs on page: {len(all_hrefs)}. "
+                 f"First 5: {all_hrefs[:5]}")
             return
 
-        _log(f"[Bypassing] {title}")
-        final_links = self._bypass_chain(dl_link)
+        _log(f"[Bypassing] {title} — {dl_link}")
+        final_links = self._bypass_chain(dl_link, _log=_log)
 
         if final_links:
             item_data = {
@@ -153,19 +197,41 @@ class _X:
             with self._lock:
                 self._catalog.append(item_data)
                 _log(f"[Found] {title} — {len(final_links)} part(s)")
+        else:
+            _log(f"[Skip] Bypass returned no links for {title!r}")
     
-    def _get_listings(self, page=1):
+    def _get_listings(self, page=1, _log=None):
+        log = _log or print
         url = f"{self._u}/page/{page}/" if page > 1 else self._u
-        html = self._g(url)
+        html = self._g(url, _log=log)
         if not html:
+            log(f"[Listings] No HTML returned for page {page}")
             return []
-        
+
         soup = BeautifulSoup(html, 'html.parser')
+
+        # Show page title so we know what we actually got (Cloudflare wall, login, etc.)
+        page_title = soup.find('title')
+        log(f"[Listings] Page title: {page_title.get_text(strip=True) if page_title else '(none)'}")
+
         links = []
         for h in soup.find_all(['h2', 'h1'], class_='entry-title'):
             a = h.find('a')
             if a and a.get('href'):
                 links.append(a['href'])
+
+        if not links:
+            # Try to detect Cloudflare / redirect / empty page
+            cf = soup.find(string=re.compile(r'cloudflare|just a moment|checking your browser', re.I))
+            if cf:
+                log(f"[Listings] ⚠ Cloudflare / bot check detected on page {page}")
+            else:
+                # Log first 300 chars of body text for manual inspection
+                body_text = soup.get_text(separator=' ', strip=True)[:300]
+                log(f"[Listings] 0 links found on page {page}. Body snippet: {body_text}")
+        else:
+            log(f"[Listings] Found {len(links)} game links on page {page}")
+
         return links
     
     def scrape_mt(self, max_pages=None, workers=3, progress_cb=None):
@@ -177,7 +243,7 @@ class _X:
             if max_pages and page > max_pages:
                 break
             _log(f"[Page {page}] Fetching listings…")
-            links = self._get_listings(page)
+            links = self._get_listings(page, _log=_log)
             if not links:
                 break
             all_links.extend(links)
