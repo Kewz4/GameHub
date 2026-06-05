@@ -1,17 +1,19 @@
-"""GameHub – dark gaming library manager with Steam cover art."""
+"""GameHub – modern dark game-library manager (CustomTkinter UI)."""
 from __future__ import annotations
 
 import json
 import queue
 import threading
 import tkinter as tk
-import tkinter.ttk as ttk
-import tkinter.messagebox as msgbox
 import tkinter.filedialog as filedialog
+import tkinter.messagebox as msgbox
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+import customtkinter as ctk
 
 from gamehub_manager.builtin_catalog import BUILTIN_CATALOG
 from gamehub_manager.catalog import load_catalog
@@ -26,83 +28,73 @@ try:
 except ImportError:
     HAS_PIL = False
 
-# ── Palette ───────────────────────────────────────────────────────────────────
-BG       = "#080810"
-SIDEBAR  = "#0b0b1a"
-PANEL    = "#0f0f22"
-CARD     = "#13132e"
-CARD_H   = "#1c1c40"
-ACCENT   = "#7c3aed"
-ACCENT_H = "#9b59ff"
-CYAN     = "#06b6d4"
-GREEN    = "#22c55e"
-YELLOW   = "#f59e0b"
-RED      = "#ef4444"
-TEXT     = "#f0f0ff"
-SUB      = "#6868a0"
-MUTED    = "#30305a"
-BORDER   = "#18183a"
-INPUT_BG = "#0c0c20"
+# ── Theme ─────────────────────────────────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+BG        = "#08080f"
+SIDEBAR   = "#0d0d1c"
+CARD      = "#111128"
+CARD_H    = "#181838"
+ACCENT    = "#7c3aed"
+ACCENT_H  = "#6d28d9"
+GREEN     = "#22c55e"
+YELLOW    = "#f59e0b"
+RED       = "#ef4444"
+CYAN      = "#06b6d4"
+TEXT      = "#f0f0ff"
+SUB       = "#6060a0"
+MUTED     = "#25253d"
+BORDER    = "#1a1a30"
 
 CARD_HUES = [
-    "#7c3aed", "#0891b2", "#059669", "#dc2626",
-    "#9333ea", "#d97706", "#2563eb", "#0d9488",
-    "#be185d", "#1d4ed8",
+    "#7c3aed","#0891b2","#059669","#dc2626",
+    "#9333ea","#d97706","#2563eb","#0d9488",
+    "#be185d","#1d4ed8",
 ]
 
-_STATUS_PALETTE: dict[str, tuple[str, str]] = {
-    "queued":      (MUTED,  TEXT),
-    "downloading": (CYAN,   "#000"),
-    "downloaded":  (YELLOW, "#000"),
-    "installing":  (YELLOW, "#000"),
-    "installed":   (GREEN,  "#000"),
-    "failed":      (RED,    TEXT),
+_STATUS_CLR: dict[str, tuple[str, str]] = {
+    "queued":      ("#25253d", "#8888bb"),
+    "downloading": ("#0e3a4a", "#06b6d4"),
+    "downloaded":  ("#3a2e0e", "#f59e0b"),
+    "installing":  ("#3a2e0e", "#f59e0b"),
+    "installed":   ("#0e3a1e", "#22c55e"),
+    "failed":      ("#3a0e0e", "#ef4444"),
 }
 
+def _status_clr(status: str) -> tuple[str, str]:
+    for k, v in _STATUS_CLR.items():
+        if status.startswith(k):
+            return v
+    return ("#3a0e0e", "#ef4444")
 
-def _status_color(status: str) -> tuple[str, str]:
-    for key, pair in _STATUS_PALETTE.items():
-        if status.startswith(key):
-            return pair
-    return RED, TEXT
-
-
-def _darken(hex_color: str, amount: int = 30) -> str:
-    r = max(0, int(hex_color[1:3], 16) - amount)
-    g = max(0, int(hex_color[3:5], 16) - amount)
-    b = max(0, int(hex_color[5:7], 16) - amount)
-    return f"#{r:02x}{g:02x}{b:02x}"
+def _darken(h: str, n: int = 25) -> str:
+    r, g, b = int(h[1:3],16), int(h[3:5],16), int(h[5:7],16)
+    return f"#{max(0,r-n):02x}{max(0,g-n):02x}{max(0,b-n):02x}"
 
 
-# ── Cover art fetcher (Steam API) ─────────────────────────────────────────────
+# ── Cover fetcher ─────────────────────────────────────────────────────────────
 
 class CoverFetcher:
-    """Background fetcher for Steam cover images and descriptions."""
-
-    COVER_W, COVER_H = 230, 115
+    W, H = 230, 112
     _UA = {"User-Agent": "GameHub/0.1"}
 
-    def __init__(self, cache_dir: Path):
-        self._cache = cache_dir
+    def __init__(self, cache: Path):
+        self._cache = cache
         self._cache.mkdir(parents=True, exist_ok=True)
         self._pending: set[str] = set()
 
-    def fetch(self, game: GameEntry,
-              callback: Callable[[str, object | None, str], None]) -> None:
-        """Start async fetch; calls callback(game_id, PhotoImage|None, desc)."""
+    def fetch(self, game: GameEntry, cb: Callable) -> None:
         if game.game_id in self._pending:
             return
         self._pending.add(game.game_id)
-        threading.Thread(
-            target=self._worker, args=(game, callback), daemon=True
-        ).start()
+        threading.Thread(target=self._worker, args=(game, cb), daemon=True).start()
 
-    def _worker(self, game: GameEntry,
-                callback: Callable[[str, object | None, str], None]) -> None:
-        img_path = self._cache / f"{game.game_id}.jpg"
+    def _worker(self, game: GameEntry, cb: Callable) -> None:
+        img_path  = self._cache / f"{game.game_id}.jpg"
         desc_path = self._cache / f"{game.game_id}.txt"
         try:
-            desc = desc_path.read_text(encoding="utf-8") if desc_path.exists() else ""
+            desc = desc_path.read_text("utf-8") if desc_path.exists() else ""
             if not img_path.exists():
                 img_url, desc = self._search_steam(game.title)
                 if img_url:
@@ -110,48 +102,32 @@ class CoverFetcher:
                     if data:
                         img_path.write_bytes(data)
                 if desc:
-                    desc_path.write_text(desc, encoding="utf-8")
-
+                    desc_path.write_text(desc, "utf-8")
             photo = None
             if img_path.exists() and HAS_PIL:
-                img = Image.open(img_path).resize(
-                    (self.COVER_W, self.COVER_H), Image.LANCZOS
-                )
+                img = Image.open(img_path).resize((self.W, self.H), Image.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
-
-            callback(game.game_id, photo, desc)
+            cb(game.game_id, photo, desc)
         except Exception:
-            callback(game.game_id, None, "")
+            cb(game.game_id, None, "")
 
     def _search_steam(self, title: str) -> tuple[str, str]:
-        q = urllib.parse.quote(title)
-        data = self._get_json(
-            f"https://store.steampowered.com/api/storesearch/?term={q}&l=en&cc=US"
-        )
+        q    = urllib.parse.quote(title)
+        data = self._json(f"https://store.steampowered.com/api/storesearch/?term={q}&l=en&cc=US")
         items = (data or {}).get("items", [])
         if not items:
             return "", ""
         app_id = items[0]["id"]
-        img_url = (
-            f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
-        )
-        detail = self._get_json(
-            f"https://store.steampowered.com/api/appdetails"
-            f"?appids={app_id}&fields=short_description"
-        )
-        desc = (
-            (detail or {})
-            .get(str(app_id), {})
-            .get("data", {})
-            .get("short_description", "")
-        )
-        return img_url, desc
+        img    = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
+        det    = self._json(f"https://store.steampowered.com/api/appdetails?appids={app_id}&fields=short_description")
+        desc   = (det or {}).get(str(app_id), {}).get("data", {}).get("short_description", "")
+        return img, desc
 
-    def _get_json(self, url: str) -> dict | None:
+    def _json(self, url: str) -> dict | None:
         try:
             req = urllib.request.Request(url, headers=self._UA)
             with urllib.request.urlopen(req, timeout=12) as r:
-                return json.loads(r.read().decode())
+                return json.loads(r.read())
         except Exception:
             return None
 
@@ -164,103 +140,95 @@ class CoverFetcher:
             return None
 
 
-# ── Reusable widgets ──────────────────────────────────────────────────────────
+# ── Console panel ─────────────────────────────────────────────────────────────
 
-class _Btn(tk.Label):
-    """Flat pill-shaped button."""
-    def __init__(self, parent, text: str, command: Callable,
-                 color: str = ACCENT, fg: str = TEXT, font_size: int = 9, **kw):
-        super().__init__(parent, text=text, fg=fg, bg=color,
-                         font=("Helvetica", font_size, "bold"),
-                         cursor="hand2", padx=10, pady=4, **kw)
-        hover = _darken(color, 25)
-        self.bind("<Enter>",    lambda _: self.config(bg=hover))
-        self.bind("<Leave>",    lambda _: self.config(bg=color))
-        self.bind("<Button-1>", lambda _: command())
+class ConsolePanel(ctk.CTkFrame):
+    """Collapsible bottom console with colour-coded, timestamped log output."""
 
+    _TAGS = {
+        "ok":    "#22c55e",
+        "error": "#ef4444",
+        "warn":  "#f59e0b",
+        "info":  "#8888bb",
+        "scrape":"#06b6d4",
+    }
 
-class _Input(tk.Entry):
-    """Dark-styled entry field."""
-    def __init__(self, parent, textvariable=None, show="", **kw):
-        super().__init__(parent, textvariable=textvariable, show=show,
-                         bg=INPUT_BG, fg=TEXT, insertbackground=TEXT,
-                         relief="flat", font=("Helvetica", 10),
-                         highlightthickness=1, highlightcolor=ACCENT,
-                         highlightbackground=BORDER, **kw)
+    def __init__(self, parent, **kw):
+        super().__init__(parent, fg_color=SIDEBAR, corner_radius=0, **kw)
+        self._collapsed = False
 
+        header = ctk.CTkFrame(self, fg_color=MUTED, corner_radius=0, height=32)
+        header.pack(fill="x")
+        header.pack_propagate(False)
 
-class _ScrollFrame(tk.Frame):
-    """Vertically scrollable frame."""
-    def __init__(self, parent, bg=BG, **kw):
-        super().__init__(parent, bg=bg, **kw)
-        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
-        self._sb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.inner = tk.Frame(self.canvas, bg=bg)
-        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.canvas.configure(yscrollcommand=self._sb.set)
-        self._sb.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.inner.bind("<Configure>", lambda _: self.canvas.configure(
-            scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(
-            self._win, width=e.width))
-        for w in (self.canvas, self.inner):
-            w.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(
-                int(-1 * (e.delta / 120)), "units"))
+        ctk.CTkLabel(header, text="▶  Console", font=("Courier New", 11, "bold"),
+                     text_color=TEXT).pack(side="left", padx=12)
+        self._toggle_btn = ctk.CTkButton(
+            header, text="▼ Hide", width=70, height=24,
+            fg_color=MUTED, hover_color=CARD, text_color=SUB,
+            font=("Helvetica", 9), command=self.toggle,
+        )
+        self._toggle_btn.pack(side="right", padx=8, pady=4)
 
+        ctk.CTkButton(
+            header, text="Clear", width=56, height=24,
+            fg_color=MUTED, hover_color=CARD, text_color=SUB,
+            font=("Helvetica", 9), command=self.clear,
+        ).pack(side="right", padx=(0, 4), pady=4)
 
-class _SideNavItem(tk.Frame):
-    """One row in the sidebar navigation."""
-    def __init__(self, parent, icon: str, label: str, command: Callable, **kw):
-        super().__init__(parent, bg=SIDEBAR, cursor="hand2", **kw)
-        self._cmd = command
-        self._active = False
-        self._icon = tk.Label(self, text=icon, bg=SIDEBAR, fg=SUB,
-                              font=("Helvetica", 16), padx=16, pady=12)
-        self._text = tk.Label(self, text=label, bg=SIDEBAR, fg=SUB,
-                              font=("Helvetica", 10), anchor="w")
-        self._icon.pack(side="left")
-        self._text.pack(side="left", fill="x", expand=True)
-        for w in (self, self._icon, self._text):
-            w.bind("<Enter>",    self._hover_on)
-            w.bind("<Leave>",    self._hover_off)
-            w.bind("<Button-1>", lambda _: self._cmd())
+        self._body = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        self._body.pack(fill="both", expand=True)
 
-    def _hover_on(self, _=None):
-        if not self._active:
-            for w in (self, self._icon, self._text):
-                w.config(bg=CARD)
+        self._text = tk.Text(
+            self._body, bg=BG, fg=TEXT, font=("Courier New", 9),
+            relief="flat", state="disabled", wrap="word",
+            highlightthickness=0, padx=10, pady=8, insertbackground=TEXT,
+        )
+        sb = ctk.CTkScrollbar(self._body, command=self._text.yview)
+        self._text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self._text.pack(fill="both", expand=True)
 
-    def _hover_off(self, _=None):
-        if not self._active:
-            for w in (self, self._icon, self._text):
-                w.config(bg=SIDEBAR)
+        for tag, color in self._TAGS.items():
+            self._text.tag_config(tag, foreground=color)
 
-    def set_active(self, state: bool):
-        self._active = state
-        bg = CARD   if state else SIDEBAR
-        fg = TEXT   if state else SUB
-        ic = ACCENT if state else SUB
-        for w in (self, self._icon, self._text):
-            w.config(bg=bg)
-        self._icon.config(fg=ic)
-        self._text.config(fg=fg)
+    def log(self, msg: str, tag: str = "info"):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._text.configure(state="normal")
+        self._text.insert("end", f"[{ts}] ", "info")
+        self._text.insert("end", msg + "\n", tag)
+        self._text.see("end")
+        self._text.configure(state="disabled")
+
+    def clear(self):
+        self._text.configure(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.configure(state="disabled")
+
+    def toggle(self):
+        if self._collapsed:
+            self._body.pack(fill="both", expand=True)
+            self._toggle_btn.configure(text="▼ Hide")
+        else:
+            self._body.pack_forget()
+            self._toggle_btn.configure(text="▲ Show")
+        self._collapsed = not self._collapsed
 
 
 # ── Game card ─────────────────────────────────────────────────────────────────
 
-class GameCard(tk.Frame):
-    W, H = 230, 280
+class GameCard(ctk.CTkFrame):
+    W, H = 232, 288
 
     def __init__(self, parent, game: GameEntry, on_action: Callable,
                  photo=None, desc: str = "", **kw):
-        super().__init__(parent, bg=CARD, width=self.W, height=self.H,
-                         relief="flat", bd=0, cursor="hand2", **kw)
-        self.propagate(False)
+        super().__init__(parent, fg_color=CARD, corner_radius=12,
+                         width=self.W, height=self.H, **kw)
+        self.pack_propagate(False)
         self.game    = game
         self._action = on_action
         self._accent = CARD_HUES[hash(game.title) % len(CARD_HUES)]
-        self._photo  = photo   # kept alive here to prevent GC
+        self._photo  = photo
         self._desc   = desc
         self._build()
 
@@ -268,85 +236,84 @@ class GameCard(tk.Frame):
         for w in self.winfo_children():
             w.destroy()
 
-        # ── Cover / banner ────────────────────────────────────────────────────
-        cover_h = CoverFetcher.COVER_H
+        # Cover / banner
         if self._photo and HAS_PIL:
-            cover = tk.Label(self, image=self._photo, bg=CARD,
-                             width=self.W, height=cover_h)
-            cover.image = self._photo  # extra ref
-            cover.pack(fill="x")
+            lbl = ctk.CTkLabel(self, image=self._photo, text="",
+                               corner_radius=0)
+            lbl.image = self._photo
+            lbl.pack(fill="x")
         else:
-            # Colour gradient placeholder
-            banner = tk.Canvas(self, bg=self._accent, width=self.W,
-                               height=cover_h, highlightthickness=0)
+            banner = tk.Canvas(self, bg=self._accent,
+                               width=self.W, height=CoverFetcher.H,
+                               highlightthickness=0)
             banner.pack(fill="x")
             banner.create_text(
-                self.W // 2, cover_h // 2,
-                text=self.game.title[:18],
-                fill="#ffffff33", font=("Helvetica", 18, "bold"),
+                self.W // 2, CoverFetcher.H // 2,
+                text=self.game.title[:16],
+                fill="#ffffff22", font=("Helvetica", 20, "bold"),
             )
 
-        # ── Body ──────────────────────────────────────────────────────────────
-        body = tk.Frame(self, bg=CARD, padx=10, pady=8)
-        body.pack(fill="both", expand=True)
+        body = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0)
+        body.pack(fill="both", expand=True, padx=10, pady=(8, 6))
 
         # Title
         title = self.game.title
-        display = (title[:24] + "…") if len(title) > 25 else title
-        tk.Label(body, text=display, bg=CARD, fg=TEXT,
-                 font=("Helvetica", 10, "bold"),
-                 anchor="w", justify="left").pack(fill="x")
+        ctk.CTkLabel(body, text=(title[:24]+"…") if len(title)>25 else title,
+                     font=("Helvetica", 11, "bold"), text_color=TEXT,
+                     anchor="w", wraplength=200).pack(fill="x")
 
-        # Description (2 lines)
+        # Description
         if self._desc:
-            short = self._desc[:80] + ("…" if len(self._desc) > 80 else "")
-            tk.Label(body, text=short, bg=CARD, fg=SUB,
-                     font=("Helvetica", 8), anchor="w",
-                     wraplength=210, justify="left").pack(fill="x", pady=(2, 0))
+            ctk.CTkLabel(body, text=self._desc[:72]+"…" if len(self._desc)>72 else self._desc,
+                         font=("Helvetica", 8), text_color=SUB,
+                         anchor="w", wraplength=200, justify="left").pack(fill="x", pady=(2,0))
 
         # Status badge
-        bg_s, fg_s = _status_color(self.game.status)
-        row = tk.Frame(body, bg=CARD)
-        row.pack(fill="x", pady=(5, 4))
-        tk.Label(row, text=f"  {self.game.status}  ",
-                 bg=bg_s, fg=fg_s,
-                 font=("Helvetica", 7, "bold"),
-                 padx=2, pady=2).pack(side="left")
+        bg_s, fg_s = _status_clr(self.game.status)
+        badge_row = ctk.CTkFrame(body, fg_color=CARD, corner_radius=0)
+        badge_row.pack(fill="x", pady=(5, 6))
+        ctk.CTkLabel(badge_row, text=f"  {self.game.status}  ",
+                     fg_color=bg_s, text_color=fg_s, corner_radius=6,
+                     font=("Helvetica", 8, "bold")).pack(side="left")
         if self.game.download_paths:
-            tk.Label(row, text=f"  {len(self.game.download_paths)} file(s)",
-                     bg=CARD, fg=MUTED, font=("Helvetica", 7)).pack(side="left", padx=6)
+            ctk.CTkLabel(badge_row, text=f"  {len(self.game.download_paths)} file(s)",
+                         text_color=SUB, font=("Helvetica", 8),
+                         fg_color=CARD).pack(side="left", padx=6)
 
-        # Action buttons
-        btns = tk.Frame(body, bg=CARD)
-        btns.pack(fill="x")
+        # Buttons
+        btn_row = ctk.CTkFrame(body, fg_color=CARD, corner_radius=0)
+        btn_row.pack(fill="x")
 
         st = self.game.status
         if st == "queued" or st.startswith("download failed"):
-            _Btn(btns, "⬇  Download",
-                 lambda g=self.game: self._action("download", g),
-                 color=ACCENT, font_size=8).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(btn_row, text="⬇  Download",
+                          command=lambda g=self.game: self._action("download", g),
+                          fg_color=ACCENT, hover_color=ACCENT_H, height=28,
+                          font=("Helvetica", 9, "bold"),
+                          corner_radius=6).pack(side="left", padx=(0, 4))
         elif st == "downloaded" or st.startswith("install failed"):
-            _Btn(btns, "📦  Install",
-                 lambda g=self.game: self._action("install", g),
-                 color="#059669", font_size=8).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(btn_row, text="📦  Install",
+                          command=lambda g=self.game: self._action("install", g),
+                          fg_color="#059669", hover_color="#047857", height=28,
+                          font=("Helvetica", 9, "bold"),
+                          corner_radius=6).pack(side="left", padx=(0, 4))
         elif st == "installed":
-            _Btn(btns, "✓  Installed", lambda: None,
-                 color="#0d3320", fg=GREEN, font_size=8).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(btn_row, text="✓  Installed", command=lambda: None,
+                          fg_color="#0d3320", hover_color="#0d3320",
+                          text_color=GREEN, height=28,
+                          font=("Helvetica", 9, "bold"),
+                          corner_radius=6).pack(side="left", padx=(0, 4))
         elif st in ("downloading", "installing"):
-            tk.Label(btns, text="⏳  Working…", bg=CARD, fg=YELLOW,
-                     font=("Helvetica", 8)).pack(side="left")
+            ctk.CTkLabel(btn_row, text="⏳  Working…",
+                         text_color=YELLOW, fg_color=CARD,
+                         font=("Helvetica", 9)).pack(side="left")
 
-        _Btn(btns, "✕",
-             lambda g=self.game: self._action("remove", g),
-             color="#2a0d0d", fg="#ff6666", font_size=8).pack(side="right")
-
-        self._bind_hover(self)
-
-    def _bind_hover(self, widget):
-        widget.bind("<Enter>", lambda _: self.config(bg=CARD_H))
-        widget.bind("<Leave>", lambda _: self.config(bg=CARD))
-        for child in widget.winfo_children():
-            self._bind_hover(child)
+        ctk.CTkButton(btn_row, text="✕",
+                      command=lambda g=self.game: self._action("remove", g),
+                      fg_color="#2a0d0d", hover_color="#3d1212",
+                      text_color="#ff6666", width=32, height=28,
+                      font=("Helvetica", 10, "bold"),
+                      corner_radius=6).pack(side="right")
 
     def set_cover(self, photo, desc: str):
         self._photo = photo
@@ -354,46 +321,43 @@ class GameCard(tk.Frame):
         self._build()
 
 
-# ── Views ─────────────────────────────────────────────────────────────────────
+# ── Library view ──────────────────────────────────────────────────────────────
 
-class LibraryView(tk.Frame):
+class LibraryView(ctk.CTkFrame):
     COLS = 4
 
     def __init__(self, parent, app: "GameHubApp", **kw):
-        super().__init__(parent, bg=BG, **kw)
-        self.app = app
+        super().__init__(parent, fg_color=BG, corner_radius=0, **kw)
+        self.app    = app
         self._cards: dict[str, GameCard] = {}
-        self._build_header()
-        self._scroll = _ScrollFrame(self, bg=BG)
-        self._scroll.pack(fill="both", expand=True, padx=20)
-        self._grid = self._scroll.inner
-        self._empty = tk.Label(
-            self._grid,
-            text="No games in your library yet.\nHead to Catalog or Add Game to get started.",
-            bg=BG, fg=SUB, font=("Helvetica", 13), justify="center",
+
+        hdr = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        hdr.pack(fill="x", padx=24, pady=(24, 12))
+        ctk.CTkLabel(hdr, text="Library", font=("Helvetica", 22, "bold"),
+                     text_color=TEXT).pack(side="left")
+        self._count = ctk.CTkLabel(hdr, text="", font=("Helvetica", 12),
+                                    text_color=SUB)
+        self._count.pack(side="left", padx=12)
+
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color=BG, corner_radius=0)
+        self._scroll.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+
+        self._empty = ctk.CTkLabel(
+            self._scroll,
+            text="No games yet.\nGo to Catalog or Add Game to get started.",
+            font=("Helvetica", 14), text_color=SUB, justify="center",
         )
 
-    def _build_header(self):
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=20, pady=(20, 12))
-        tk.Label(hdr, text="Library", bg=BG, fg=TEXT,
-                 font=("Helvetica", 20, "bold")).pack(side="left")
-        self._count_lbl = tk.Label(hdr, text="", bg=BG, fg=SUB,
-                                    font=("Helvetica", 11))
-        self._count_lbl.pack(side="left", padx=12)
-
     def refresh(self, games: list[GameEntry]):
-        self._count_lbl.config(text=f"{len(games)} game(s)")
-        self._empty.pack_forget()
-        current_ids = {g.game_id for g in games}
+        self._count.configure(text=f"{len(games)} game(s)")
+        self._empty.grid_forget()
+        current = {g.game_id for g in games}
 
-        # Remove stale
         for gid in list(self._cards):
-            if gid not in current_ids:
+            if gid not in current:
                 self._cards[gid].destroy()
                 del self._cards[gid]
 
-        # Add / update
         for game in games:
             if game.game_id in self._cards:
                 self._cards[game.game_id].game = game
@@ -401,97 +365,97 @@ class LibraryView(tk.Frame):
             else:
                 photo = self.app._cover_images.get(game.game_id)
                 desc  = self.app._cover_descs.get(game.game_id, "")
-                card  = GameCard(self._grid, game, self.app.on_card_action,
+                card  = GameCard(self._scroll, game, self.app.on_card_action,
                                  photo=photo, desc=desc)
                 self._cards[game.game_id] = card
-                # Kick off cover fetch
-                self.app.fetcher.fetch(game, self.app._cover_callback)
+                self.app.fetcher.fetch(game, self.app._cover_cb)
 
-        self._reflow(games)
-        if not games:
-            self._empty.pack(pady=80)
-
-    def _reflow(self, games: list[GameEntry]):
-        for card in self._cards.values():
-            card.grid_forget()
         for i, game in enumerate(games):
             row, col = divmod(i, self.COLS)
-            self._cards[game.game_id].grid(
-                row=row, column=col, padx=8, pady=8, sticky="nw"
-            )
+            self._cards[game.game_id].grid(row=row, column=col,
+                                            padx=8, pady=8, sticky="nw")
 
-    def update_cover(self, game_id: str, photo, desc: str):
-        card = self._cards.get(game_id)
-        if card:
+        if not games:
+            self._empty.grid(row=0, column=0, columnspan=self.COLS, pady=80)
+
+    def update_cover(self, gid: str, photo, desc: str):
+        if card := self._cards.get(gid):
             card.set_cover(photo, desc)
 
 
-class CatalogView(tk.Frame):
+# ── Catalog view ──────────────────────────────────────────────────────────────
+
+class CatalogView(ctk.CTkFrame):
     def __init__(self, parent, app: "GameHubApp", **kw):
-        super().__init__(parent, bg=BG, **kw)
-        self.app    = app
+        super().__init__(parent, fg_color=BG, corner_radius=0, **kw)
+        self.app     = app
         self._items: list[dict] = []
+        self._scraper = None
         self._build()
 
     def _build(self):
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=20, pady=(20, 4))
-        tk.Label(hdr, text="Catalog", bg=BG, fg=TEXT,
-                 font=("Helvetica", 20, "bold")).pack(side="left")
-
-        tk.Label(self,
-                 text="Load a local JSON catalog saved by manager.py, or any HTTPS catalog URL.",
-                 bg=BG, fg=SUB, font=("Helvetica", 10), anchor="w").pack(
-                     fill="x", padx=20, pady=(0, 12))
+        hdr = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        hdr.pack(fill="x", padx=24, pady=(24, 8))
+        ctk.CTkLabel(hdr, text="Catalog", font=("Helvetica", 22, "bold"),
+                     text_color=TEXT).pack(side="left")
 
         # Action bar
-        action_row = tk.Frame(self, bg=BG)
-        action_row.pack(fill="x", padx=20, pady=(0, 12))
+        acts = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        acts.pack(fill="x", padx=24, pady=(0, 12))
 
-        _Btn(action_row, "⚡  Built-in Catalog", self._load_builtin,
-             color=ACCENT, font_size=10).pack(side="left", padx=(0, 8))
-        self._scrape_btn = _Btn(action_row, "🔍  Scrape Live", self._start_scrape,
-                                 color="#059669", font_size=10)
-        self._scrape_btn.pack(side="left", padx=(0, 8))
-        self._scrape_status = tk.Label(action_row, text="", bg=BG, fg=YELLOW,
-                                        font=("Helvetica", 9))
-        self._scrape_status.pack(side="left", padx=8)
+        ctk.CTkButton(acts, text="⚡  Built-in (15 games)",
+                      command=self._load_builtin,
+                      fg_color=ACCENT, hover_color=ACCENT_H, height=34,
+                      font=("Helvetica", 10, "bold"), corner_radius=8,
+                      ).pack(side="left", padx=(0, 8))
 
-        # Source bar
-        bar = tk.Frame(self, bg=PANEL, padx=16, pady=12)
-        bar.pack(fill="x", padx=20, pady=(0, 12))
-        tk.Label(bar, text="Or load a custom catalog", bg=PANEL, fg=SUB,
-                 font=("Helvetica", 9)).pack(anchor="w")
-        src_row = tk.Frame(bar, bg=PANEL)
-        src_row.pack(fill="x", pady=(4, 0))
+        self._scrape_btn = ctk.CTkButton(
+            acts, text="🔍  Scrape Live",
+            command=self._start_scrape,
+            fg_color="#059669", hover_color="#047857", height=34,
+            font=("Helvetica", 10, "bold"), corner_radius=8,
+        )
+        self._scrape_btn.pack(side="left", padx=(0, 12))
+
+        self._progress = ctk.CTkProgressBar(acts, width=160, height=8,
+                                             fg_color=MUTED, progress_color=CYAN,
+                                             corner_radius=4)
+        self._progress.set(0)
+
+        self._scrape_lbl = ctk.CTkLabel(acts, text="", font=("Helvetica", 9),
+                                         text_color=YELLOW)
+        self._scrape_lbl.pack(side="left")
+
+        # Custom catalog loader
+        custom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10)
+        custom.pack(fill="x", padx=24, pady=(0, 12))
+        ctk.CTkLabel(custom, text="Custom catalog (local file or HTTPS URL)",
+                     font=("Helvetica", 9), text_color=SUB).pack(anchor="w", padx=14, pady=(10,2))
+        row = ctk.CTkFrame(custom, fg_color=CARD, corner_radius=0)
+        row.pack(fill="x", padx=14, pady=(0, 10))
         self._src_var = tk.StringVar()
-        _Input(src_row, textvariable=self._src_var).pack(
-            side="left", fill="x", expand=True, padx=(0, 8))
-        _Btn(src_row, "Browse", self._browse, color=MUTED).pack(side="left", padx=(0, 8))
-        _Btn(src_row, "Load",   self._load,   color=MUTED).pack(side="left")
+        ctk.CTkEntry(row, textvariable=self._src_var, fg_color=BG,
+                     border_color=BORDER, text_color=TEXT,
+                     font=("Helvetica", 10), corner_radius=6).pack(
+                         side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(row, text="Browse", width=70, fg_color=MUTED,
+                      hover_color=CARD_H, font=("Helvetica", 9),
+                      corner_radius=6, command=self._browse).pack(side="left", padx=(0,6))
+        ctk.CTkButton(row, text="Load", width=60, fg_color=ACCENT,
+                      hover_color=ACCENT_H, font=("Helvetica", 9),
+                      corner_radius=6, command=self._load_custom).pack(side="left")
 
-        self._count = tk.Label(self, text="", bg=BG, fg=SUB, font=("Helvetica", 10))
-        self._count.pack(anchor="w", padx=20, pady=(0, 8))
+        self._count_lbl = ctk.CTkLabel(self, text="", font=("Helvetica", 10),
+                                        text_color=SUB)
+        self._count_lbl.pack(anchor="w", padx=24, pady=(0, 6))
 
-        self._scroll = _ScrollFrame(self, bg=BG)
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color=BG, corner_radius=0)
         self._scroll.pack(fill="both", expand=True, padx=20)
-        self._rows_frame = self._scroll.inner
 
-        # Auto-load built-in catalog on startup
+        # Auto-load built-in on first open
         self.after(100, self._load_builtin)
 
-    def _load_builtin(self):
-        self._items = [
-            {
-                "title":       g["title"],
-                "urls":        g.get("urls", []),
-                "description": g.get("description", ""),
-                "password":    g.get("password", ""),
-            }
-            for g in BUILTIN_CATALOG
-        ]
-        self._render_items()
-        self.app.post_log(f"Built-in catalog loaded — {len(self._items)} title(s).")
+    # ── Scraping ──────────────────────────────────────────────────────────────
 
     def _start_scrape(self):
         try:
@@ -499,170 +463,174 @@ class CatalogView(tk.Frame):
         except Exception as exc:
             msgbox.showerror("GameHub", f"Could not import manager.py:\n{exc}")
             return
-
-        self._scrape_btn.config(text="⏳  Scraping…", cursor="watch")
-        self._scrape_status.config(text="Starting…")
-        self._items = []
         self._scraper = _X()
+        self._items   = []
+        self._scrape_btn.configure(text="⏳  Scraping…", state="disabled")
+        self._progress.pack(side="left", padx=(0, 8))
+        self._progress.start()
         threading.Thread(target=self._scrape_worker, daemon=True).start()
 
     def _scrape_worker(self):
         try:
-            catalog = self._scraper.scrape_mt(progress_cb=self._on_scrape_progress)
-            # Convert manager.py format → display format
-            items = [
-                {
-                    "title":       g.get("t", "Unknown"),
-                    "urls":        g.get("d", []),
-                    "description": g.get("u", ""),
-                    "password":    g.get("p", ""),
-                }
-                for g in catalog
-            ]
+            catalog = self._scraper.scrape_mt(progress_cb=self._on_progress)
+            items   = self._fmt(catalog)
             self.after(0, self._scrape_done, items)
         except Exception as exc:
-            self.after(0, self._scrape_error, str(exc))
+            self.after(0, self._scrape_err, str(exc))
 
-    def _on_scrape_progress(self, msg: str):
-        # Called from background threads — schedule on main thread
-        self.after(0, self._apply_scrape_progress, msg)
-        # Also refresh catalog list live when a game is found
+    def _on_progress(self, msg: str):
+        self.after(0, self._apply_progress, msg)
         if msg.startswith("[Found]"):
             self.after(0, self._live_refresh)
 
-    def _apply_scrape_progress(self, msg: str):
-        short = msg[:70] + ("…" if len(msg) > 70 else "")
-        self._scrape_status.config(text=short)
-        self.app.post_log(msg)
+    def _apply_progress(self, msg: str):
+        short = (msg[:68] + "…") if len(msg) > 68 else msg
+        self._scrape_lbl.configure(text=short)
+        # Pick tag based on prefix
+        tag = ("ok"     if "[Found]"   in msg else
+               "scrape" if "[Page"     in msg or "[Scraping]" in msg else
+               "warn"   if "[Bypass"   in msg else
+               "error"  if "[Error]"   in msg else "info")
+        self.app.console.log(msg, tag)
 
     def _live_refresh(self):
-        catalog = self._scraper._catalog[:]  # snapshot
-        items = [
-            {
-                "title":       g.get("t", "Unknown"),
-                "urls":        g.get("d", []),
-                "description": g.get("u", ""),
-                "password":    g.get("p", ""),
-            }
-            for g in catalog
-        ]
-        self._items = items
-        self._render_items()
+        snap = self._scraper._catalog[:]
+        self._items = self._fmt(snap)
+        self._render()
 
     def _scrape_done(self, items: list):
         self._items = items
-        self._render_items()
-        self._scrape_btn.config(text="🔍  Scrape Live", cursor="hand2")
-        self._scrape_status.config(text=f"Done — {len(items)} game(s) found")
-        self.app.post_log(f"Scrape complete — {len(items)} game(s) found.")
-        # Auto-save to catalog.json
+        self._render()
+        self._scrape_btn.configure(text="🔍  Scrape Live", state="normal")
+        self._progress.stop()
+        self._progress.pack_forget()
+        self._scrape_lbl.configure(text=f"✓ {len(items)} game(s) found")
+        self.app.console.log(f"Scrape complete — {len(items)} game(s) found.", "ok")
         try:
             self._scraper.save()
         except Exception:
             pass
 
-    def _scrape_error(self, msg: str):
-        self._scrape_btn.config(text="🔍  Scrape Live", cursor="hand2")
-        self._scrape_status.config(text=f"Error: {msg[:60]}")
-        self.app.post_log(f"[Scrape error] {msg}")
+    def _scrape_err(self, msg: str):
+        self._scrape_btn.configure(text="🔍  Scrape Live", state="normal")
+        self._progress.stop()
+        self._progress.pack_forget()
+        self._scrape_lbl.configure(text="Error — see console")
+        self.app.console.log(f"Scrape error: {msg}", "error")
+
+    @staticmethod
+    def _fmt(catalog: list) -> list[dict]:
+        return [
+            {"title": g.get("t","?"), "urls": g.get("d",[]),
+             "description": g.get("u",""), "password": g.get("p","")}
+            for g in catalog
+        ]
+
+    # ── Built-in / custom catalog ─────────────────────────────────────────────
+
+    def _load_builtin(self):
+        self._items = [
+            {"title": g["title"], "urls": g.get("urls",[]),
+             "description": g.get("description",""), "password": g.get("password","")}
+            for g in BUILTIN_CATALOG
+        ]
+        self._render()
+        self.app.console.log(f"Built-in catalog — {len(self._items)} titles.", "ok")
 
     def _browse(self):
         path = filedialog.askopenfilename(
             title="Open catalog JSON",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            filetypes=[("JSON files","*.json"),("All files","*.*")],
         )
         if path:
             self._src_var.set(path)
 
-    def _load(self):
+    def _load_custom(self):
         source = self._src_var.get().strip()
         if not source:
-            msgbox.showerror("GameHub", "Enter a catalog source first.")
+            msgbox.showerror("GameHub", "Enter a source first.")
             return
         try:
             raw = Path(source)
             if raw.exists():
-                with raw.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                games_raw = (
-                    data.get("games", data) if isinstance(data, dict) else data
-                )
+                data = json.loads(raw.read_text("utf-8"))
+                games = data.get("games", data) if isinstance(data, dict) else data
                 self._items = [
-                    {
-                        "title":       g.get("title") or g.get("t", "Unknown"),
-                        "urls":        g.get("urls")  or g.get("d") or [],
-                        "description": g.get("description", ""),
-                        "password":    g.get("password") or g.get("p", ""),
-                    }
-                    for g in games_raw if isinstance(g, dict)
+                    {"title": g.get("title") or g.get("t","?"),
+                     "urls":  g.get("urls") or g.get("d",[]),
+                     "description": g.get("description",""),
+                     "password":    g.get("password") or g.get("p",""),
+                    } for g in games if isinstance(g, dict)
                 ]
             else:
-                catalog_items = load_catalog(source)
+                items = load_catalog(source)
                 self._items = [
                     {"title": c.title, "urls": c.urls,
                      "description": c.description, "password": c.password}
-                    for c in catalog_items
+                    for c in items
                 ]
         except Exception as exc:
             msgbox.showerror("GameHub", f"Could not load catalog:\n{exc}")
             return
+        self._render()
+        self.app.console.log(f"Loaded catalog: {len(self._items)} titles.", "ok")
 
-        self._render_items()
-        self.app.post_log(f"Catalog loaded — {len(self._items)} title(s).")
-
-    def _render_items(self):
-        for w in self._rows_frame.winfo_children():
+    def _render(self):
+        for w in self._scroll.winfo_children():
             w.destroy()
-        self._count.config(text=f"{len(self._items)} title(s)")
-        if not self._items:
-            tk.Label(self._rows_frame, text="No items found.",
-                     bg=BG, fg=SUB, font=("Helvetica", 11)).pack(pady=40)
-            return
+        self._count_lbl.configure(text=f"{len(self._items)} title(s)")
         for i, item in enumerate(self._items):
-            bg = CARD if i % 2 == 0 else PANEL
-            row = tk.Frame(self._rows_frame, bg=bg, padx=16, pady=10)
-            row.pack(fill="x", pady=1)
-            info = tk.Frame(row, bg=bg)
-            info.pack(side="left", fill="x", expand=True)
-            tk.Label(info, text=item["title"], bg=bg, fg=TEXT,
-                     font=("Helvetica", 11, "bold"), anchor="w").pack(fill="x")
+            bg = CARD if i % 2 == 0 else MUTED
+            row = ctk.CTkFrame(self._scroll, fg_color=bg, corner_radius=8)
+            row.pack(fill="x", pady=2)
+            info = ctk.CTkFrame(row, fg_color=bg, corner_radius=0)
+            info.pack(side="left", fill="x", expand=True, padx=14, pady=8)
+            ctk.CTkLabel(info, text=item["title"],
+                         font=("Helvetica", 11, "bold"), text_color=TEXT,
+                         anchor="w").pack(fill="x")
             if item.get("description"):
-                tk.Label(info, text=item["description"][:90], bg=bg, fg=SUB,
-                         font=("Helvetica", 9), anchor="w").pack(fill="x")
-            tk.Label(info, text=f"{len(item['urls'])} URL(s)",
-                     bg=bg, fg=MUTED, font=("Helvetica", 8)).pack(anchor="w")
-            _Btn(row, "+ Add to Library",
-                 lambda it=item: self.app.add_from_catalog(it),
-                 color=ACCENT).pack(side="right", padx=(8, 0))
+                ctk.CTkLabel(info, text=item["description"][:90],
+                             font=("Helvetica", 9), text_color=SUB,
+                             anchor="w").pack(fill="x")
+            ctk.CTkLabel(info, text=f"{len(item['urls'])} URL(s)",
+                         font=("Helvetica", 8), text_color="#444466",
+                         anchor="w").pack(fill="x")
+            ctk.CTkButton(row, text="+ Add",
+                          command=lambda it=item: self.app.add_from_catalog(it),
+                          fg_color=ACCENT, hover_color=ACCENT_H,
+                          width=80, height=30, font=("Helvetica", 9, "bold"),
+                          corner_radius=6).pack(side="right", padx=12)
 
 
-class AddGameView(tk.Frame):
+# ── Add game view ─────────────────────────────────────────────────────────────
+
+class AddGameView(ctk.CTkFrame):
     def __init__(self, parent, app: "GameHubApp", **kw):
-        super().__init__(parent, bg=BG, **kw)
+        super().__init__(parent, fg_color=BG, corner_radius=0, **kw)
         self.app = app
         self._build()
 
     def _build(self):
-        tk.Frame(self, bg=BG).pack(pady=(20, 0))
-        tk.Label(self, text="Add Game", bg=BG, fg=TEXT,
-                 font=("Helvetica", 20, "bold")).pack(anchor="w", padx=20)
+        ctk.CTkLabel(self, text="Add Game", font=("Helvetica", 22, "bold"),
+                     text_color=TEXT).pack(anchor="w", padx=24, pady=(24,12))
 
-        form = tk.Frame(self, bg=PANEL, padx=24, pady=20)
-        form.pack(fill="x", padx=20, pady=12)
+        form = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12)
+        form.pack(fill="x", padx=24, pady=(0,12))
 
-        def field(label_text, var=None, text_widget=False, show=""):
-            tk.Label(form, text=label_text, bg=PANEL, fg=SUB,
-                     font=("Helvetica", 9)).pack(anchor="w", pady=(10, 2))
+        def field(label, var=None, text_widget=False, show=""):
+            ctk.CTkLabel(form, text=label, font=("Helvetica", 9),
+                         text_color=SUB).pack(anchor="w", padx=16, pady=(12,2))
             if text_widget:
-                t = tk.Text(form, height=5, bg=INPUT_BG, fg=TEXT,
-                            insertbackground=TEXT, relief="flat",
-                            font=("Helvetica", 10),
-                            highlightthickness=1, highlightcolor=ACCENT,
-                            highlightbackground=BORDER)
-                t.pack(fill="x")
+                t = ctk.CTkTextbox(form, height=100, fg_color=BG,
+                                   border_color=BORDER, border_width=1,
+                                   font=("Helvetica", 10), text_color=TEXT,
+                                   corner_radius=6)
+                t.pack(fill="x", padx=16)
                 return t
-            e = _Input(form, textvariable=var, show=show)
-            e.pack(fill="x")
+            e = ctk.CTkEntry(form, textvariable=var, show=show,
+                             fg_color=BG, border_color=BORDER, text_color=TEXT,
+                             font=("Helvetica", 10), corner_radius=6, height=36)
+            e.pack(fill="x", padx=16)
             return e
 
         self._title_var = tk.StringVar()
@@ -671,9 +639,11 @@ class AddGameView(tk.Frame):
         self._urls_box = field("Direct Download URLs  (one per line)", text_widget=True)
         field("Archive Password (optional)", self._pw_var, show="*")
 
-        tk.Frame(form, bg=PANEL, height=16).pack()
-        _Btn(form, "Add to Library", self._submit,
-             color=ACCENT, font_size=10).pack(anchor="e")
+        ctk.CTkFrame(form, fg_color=CARD, height=8, corner_radius=0).pack()
+        ctk.CTkButton(form, text="Add to Library", command=self._submit,
+                      fg_color=ACCENT, hover_color=ACCENT_H, height=38,
+                      font=("Helvetica", 10, "bold"), corner_radius=8,
+                      ).pack(anchor="e", padx=16, pady=12)
 
     def _submit(self):
         title = self._title_var.get().strip()
@@ -686,194 +656,184 @@ class AddGameView(tk.Frame):
         self._title_var.set("")
         self._pw_var.set("")
         self._urls_box.delete("1.0", "end")
-        self.app.post_log(f'Added "{title}" to library.')
         self.app.switch_view("library")
 
 
-class DownloadsView(tk.Frame):
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+class Sidebar(ctk.CTkFrame):
     def __init__(self, parent, app: "GameHubApp", **kw):
-        super().__init__(parent, bg=BG, **kw)
+        super().__init__(parent, fg_color=SIDEBAR, corner_radius=0,
+                         width=220, **kw)
+        self.pack_propagate(False)
         self.app = app
+        self._items: dict[str, ctk.CTkButton] = {}
         self._build()
 
     def _build(self):
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=20, pady=(20, 12))
-        tk.Label(hdr, text="Activity Log", bg=BG, fg=TEXT,
-                 font=("Helvetica", 20, "bold")).pack(side="left")
-        _Btn(hdr, "Clear", self._clear, color=MUTED, font_size=9).pack(side="right")
+        # Logo
+        logo = ctk.CTkFrame(self, fg_color=SIDEBAR, corner_radius=0)
+        logo.pack(fill="x", pady=(24, 8))
+        ctk.CTkLabel(logo, text="🎮", font=("Helvetica", 34),
+                     text_color=ACCENT).pack()
+        ctk.CTkLabel(logo, text="GameHub", font=("Helvetica", 16, "bold"),
+                     text_color=TEXT).pack()
+        ctk.CTkLabel(logo, text="Game Library Manager",
+                     font=("Helvetica", 8), text_color=SUB).pack()
 
-        self._log = tk.Text(
-            self, bg=PANEL, fg=TEXT, font=("Courier", 9),
-            relief="flat", state="disabled", wrap="word",
-            highlightthickness=0, padx=16, pady=12,
-        )
-        self._log.pack(fill="both", expand=True, padx=20, pady=(0, 20))
-        self._log.tag_config("ok",    foreground=GREEN)
-        self._log.tag_config("warn",  foreground=YELLOW)
-        self._log.tag_config("error", foreground=RED)
-        self._log.tag_config("info",  foreground=TEXT)
+        ctk.CTkFrame(self, fg_color=BORDER, height=1,
+                     corner_radius=0).pack(fill="x", padx=16, pady=12)
 
-    def append(self, msg: str):
-        self._log.configure(state="normal")
-        low = msg.lower()
-        tag = (
-            "error" if ("fail" in low or "error" in low) else
-            "warn"  if "%" in msg else
-            "ok"    if ("✓" in msg or "download" in low or "install" in low) else
-            "info"
-        )
-        self._log.insert("end", msg + "\n", tag)
-        self._log.see("end")
-        self._log.configure(state="disabled")
+        for key, icon, label in [
+            ("library",  "🎮", "Library"),
+            ("catalog",  "📦", "Catalog"),
+            ("add",      "➕", "Add Game"),
+        ]:
+            btn = ctk.CTkButton(
+                self, text=f"  {icon}   {label}",
+                anchor="w", font=("Helvetica", 11),
+                fg_color=SIDEBAR, hover_color=CARD,
+                text_color=SUB, height=44, corner_radius=8,
+                command=lambda k=key: self.app.switch_view(k),
+            )
+            btn.pack(fill="x", padx=10, pady=2)
+            self._items[key] = btn
 
-    def _clear(self):
-        self._log.configure(state="normal")
-        self._log.delete("1.0", "end")
-        self._log.configure(state="disabled")
+        # Console toggle at bottom
+        ctk.CTkFrame(self, fg_color=SIDEBAR, corner_radius=0).pack(
+            fill="both", expand=True)
+        ctk.CTkButton(
+            self, text="  📋   Console",
+            anchor="w", font=("Helvetica", 11),
+            fg_color=SIDEBAR, hover_color=CARD,
+            text_color=SUB, height=44, corner_radius=8,
+            command=self.app.toggle_console,
+        ).pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkLabel(self, text="v0.1.0", font=("Helvetica", 8),
+                     text_color=MUTED).pack(pady=(0, 12))
+
+    def set_active(self, key: str):
+        for k, btn in self._items.items():
+            if k == key:
+                btn.configure(fg_color=CARD, text_color=TEXT)
+            else:
+                btn.configure(fg_color=SIDEBAR, text_color=SUB)
 
 
 # ── Toast ─────────────────────────────────────────────────────────────────────
 
 class _Toast(tk.Toplevel):
-    def __init__(self, parent, message: str):
+    def __init__(self, parent, msg: str):
         super().__init__(parent)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.config(bg=ACCENT)
-        tk.Label(self, text=message, bg=ACCENT, fg=TEXT,
+        tk.Label(self, text=msg, bg=ACCENT, fg=TEXT,
                  font=("Helvetica", 10), padx=20, pady=10).pack()
         self.update_idletasks()
         px = parent.winfo_rootx() + parent.winfo_width()  - self.winfo_width()  - 20
-        py = parent.winfo_rooty() + parent.winfo_height() - self.winfo_height() - 40
+        py = parent.winfo_rooty() + parent.winfo_height() - self.winfo_height() - 60
         self.geometry(f"+{px}+{py}")
         self.after(2800, self.destroy)
 
 
 # ── Main application ──────────────────────────────────────────────────────────
 
-class GameHubApp(tk.Tk):
-    def __init__(self) -> None:
+class GameHubApp(ctk.CTk):
+    def __init__(self):
         super().__init__()
         self.title("GameHub")
-        self.geometry("1280x800")
-        self.minsize(960, 640)
-        self.configure(bg=BG)
-
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("Vertical.TScrollbar",
-                         background=MUTED, troughcolor=PANEL,
-                         bordercolor=PANEL, arrowcolor=SUB)
+        self.geometry("1300x860")
+        self.minsize(980, 660)
+        self.configure(fg_color=BG)
 
         self.store  = LibraryStore()
         self.games  = self.store.load()
         self._queue: queue.Queue[str] = queue.Queue()
 
-        # Cover art state
-        self.fetcher: CoverFetcher = CoverFetcher(self.store.root / "covers")
-        self._cover_images: dict[str, object] = {}   # game_id → PhotoImage (keeps ref)
-        self._cover_descs:  dict[str, str]    = {}   # game_id → description
+        self.fetcher: CoverFetcher       = CoverFetcher(self.store.root / "covers")
+        self._cover_images: dict[str, object] = {}
+        self._cover_descs:  dict[str, str]    = {}
 
-        self._nav_items: dict[str, _SideNavItem] = {}
-        self._views:     dict[str, tk.Frame]     = {}
-        self._active_view = "library"
+        self._views:    dict[str, ctk.CTkFrame] = {}
+        self._active    = "library"
 
         self._build()
         self._refresh_library()
         self.after(250, self._drain)
 
-    # ── Layout ────────────────────────────────────────────────────────────────
-
     def _build(self):
-        pane = tk.Frame(self, bg=BG)
-        pane.pack(fill="both", expand=True)
+        # Outer: sidebar | right
+        outer = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        outer.pack(fill="both", expand=True)
 
-        self._make_sidebar(pane).pack(side="left", fill="y")
+        self.sidebar = Sidebar(outer, self)
+        self.sidebar.pack(side="left", fill="y")
 
-        content = tk.Frame(pane, bg=BG)
-        content.pack(side="left", fill="both", expand=True)
+        right = ctk.CTkFrame(outer, fg_color=BG, corner_radius=0)
+        right.pack(side="left", fill="both", expand=True)
 
-        self._statusbar = tk.Label(
-            self, text="Ready", bg=SIDEBAR, fg=SUB,
-            font=("Helvetica", 9), anchor="w", padx=16, pady=5,
+        # Views stacked
+        view_area = ctk.CTkFrame(right, fg_color=BG, corner_radius=0)
+        view_area.pack(fill="both", expand=True)
+
+        for name, cls in [
+            ("library", LibraryView),
+            ("catalog", CatalogView),
+            ("add",     AddGameView),
+        ]:
+            v = cls(view_area, self)
+            v.place(relwidth=1, relheight=1)
+            self._views[name] = v
+
+        # Console panel at bottom of right column
+        self.console = ConsolePanel(right)
+        self.console.pack(fill="x", side="bottom")
+        self.console.configure(height=200)
+        self.console.pack_propagate(False)
+
+        # Status bar
+        self._status = ctk.CTkLabel(
+            self, text="Ready", font=("Helvetica", 9),
+            text_color=SUB, fg_color=SIDEBAR, anchor="w",
+            corner_radius=0,
         )
-        self._statusbar.pack(fill="x", side="bottom")
-
-        views_cfg = [
-            ("library",   LibraryView),
-            ("catalog",   CatalogView),
-            ("add",       AddGameView),
-            ("downloads", DownloadsView),
-        ]
-        for name, cls in views_cfg:
-            view = cls(content, self)
-            view.place(relwidth=1, relheight=1)
-            self._views[name] = view
+        self._status.pack(fill="x", side="bottom", ipady=4, ipadx=12)
 
         self.switch_view("library")
 
-    def _make_sidebar(self, parent) -> tk.Frame:
-        sb = tk.Frame(parent, bg=SIDEBAR, width=215)
-        sb.pack_propagate(False)
-
-        logo = tk.Frame(sb, bg=SIDEBAR, pady=22)
-        logo.pack(fill="x")
-        tk.Label(logo, text="🎮", bg=SIDEBAR, fg=ACCENT,
-                 font=("Helvetica", 30)).pack()
-        tk.Label(logo, text="GameHub", bg=SIDEBAR, fg=TEXT,
-                 font=("Helvetica", 15, "bold")).pack()
-        tk.Label(logo, text="Game Library Manager", bg=SIDEBAR, fg=SUB,
-                 font=("Helvetica", 8)).pack()
-
-        tk.Frame(sb, bg=BORDER, height=1).pack(fill="x", padx=16, pady=8)
-
-        for key, icon, label in [
-            ("library",   "🎮", "Library"),
-            ("catalog",   "📦", "Catalog"),
-            ("add",       "➕", "Add Game"),
-            ("downloads", "📋", "Activity"),
-        ]:
-            item = _SideNavItem(sb, icon, label, lambda k=key: self.switch_view(k))
-            item.pack(fill="x")
-            self._nav_items[key] = item
-
-        tk.Frame(sb, bg=SIDEBAR).pack(fill="both", expand=True)
-        tk.Label(sb, text="v0.1.0", bg=SIDEBAR, fg=MUTED,
-                 font=("Helvetica", 8)).pack(pady=12)
-        return sb
-
     def switch_view(self, name: str):
-        for key, item in self._nav_items.items():
-            item.set_active(key == name)
-        for key, view in self._views.items():
-            (view.lift if key == name else view.lower)()
-        self._active_view = name
+        self.sidebar.set_active(name)
+        for k, v in self._views.items():
+            (v.lift if k == name else v.lower)()
+        self._active = name
 
-    # ── Cover callback (called from background thread) ─────────────────────────
+    def toggle_console(self):
+        self.console.toggle()
 
-    def _cover_callback(self, game_id: str, photo, desc: str):
-        # Must schedule back onto main thread
-        self.after(0, self._apply_cover, game_id, photo, desc)
+    # ── Cover art ────────────────────────────────────────────────────────────
 
-    def _apply_cover(self, game_id: str, photo, desc: str):
+    def _cover_cb(self, gid: str, photo, desc: str):
+        self.after(0, self._apply_cover, gid, photo, desc)
+
+    def _apply_cover(self, gid: str, photo, desc: str):
         if photo:
-            self._cover_images[game_id] = photo
+            self._cover_images[gid] = photo
         if desc:
-            self._cover_descs[game_id] = desc
-        self._views["library"].update_cover(game_id, photo, desc)
+            self._cover_descs[gid] = desc
+        self._views["library"].update_cover(gid, photo, desc)
 
-    # ── Game operations ───────────────────────────────────────────────────────
+    # ── Game ops ──────────────────────────────────────────────────────────────
 
     def add_game(self, title: str, urls: list[str], password: str = ""):
-        entry = GameEntry(title=title, urls=urls, password=password)
-        self.games.append(entry)
+        self.games.append(GameEntry(title=title, urls=urls, password=password))
         self.store.save(self.games)
         self._refresh_library()
         _Toast(self, f'Added "{title}"')
+        self.console.log(f'Game added: {title}', "ok")
 
     def add_from_catalog(self, item: dict):
-        self.add_game(item["title"], item["urls"], item.get("password", ""))
+        self.add_game(item["title"], item["urls"], item.get("password",""))
 
     def on_card_action(self, action: str, game: GameEntry):
         if action == "download":
@@ -888,61 +848,57 @@ class GameHubApp(tk.Tk):
     def _download(self, game: GameEntry):
         try:
             game.status = "downloading"
-            self._save_refresh()
-            paths = download_many(
-                game.urls, game.download_dir(self.store.root), self._queue.put
-            )
+            self._sq()
+            self.console.log(f"Downloading {game.title}…", "scrape")  # scheduled in drain
+            paths = download_many(game.urls, game.download_dir(self.store.root),
+                                  lambda m: self._queue.put(("log", m, "warn")))
             game.download_paths = [str(p) for p in paths]
             game.status = "downloaded"
-            self._queue.put(f'✓ Downloaded: {game.title}')
+            self._queue.put(("log", f"✓ Downloaded: {game.title}", "ok"))
         except Exception as exc:
             game.status = f"download failed: {exc}"
-            self._queue.put(f'✗ Download failed: {game.title} — {exc}')
+            self._queue.put(("log", f"✗ {game.title}: {exc}", "error"))
         finally:
-            self._save_refresh()
+            self._sq()
 
     def _install(self, game: GameEntry):
         try:
             paths   = [Path(p) for p in game.download_paths]
             archive = first_archive(paths)
-            if archive is None:
-                raise RuntimeError("No supported archive found in download folder.")
+            if not archive:
+                raise RuntimeError("No supported archive found.")
             game.status = "installing"
-            self._save_refresh()
+            self._sq()
             dest = game.destination_dir(self.store.root)
             extract_archive(archive, dest, game.password)
             game.install_path = str(dest)
             game.status = "installed"
-            self._queue.put(f'✓ Installed: {game.title}  →  {dest}')
+            self._queue.put(("log", f"✓ Installed: {game.title}", "ok"))
         except Exception as exc:
             game.status = f"install failed: {exc}"
-            self._queue.put(f'✗ Install failed: {game.title} — {exc}')
+            self._queue.put(("log", f"✗ {game.title}: {exc}", "error"))
         finally:
-            self._save_refresh()
+            self._sq()
 
-    def _save_refresh(self):
+    def _sq(self):
         self.store.save(self.games)
-        self._queue.put("__refresh__")
+        self._queue.put(("refresh",))
 
     def _refresh_library(self):
         self._views["library"].refresh(self.games)
 
-    def post_log(self, msg: str):
-        self._queue.put(msg)
-
-    # ── Message pump ──────────────────────────────────────────────────────────
-
     def _drain(self):
         while True:
             try:
-                msg = self._queue.get_nowait()
+                item = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if msg == "__refresh__":
+            if item[0] == "refresh":
                 self._refresh_library()
-            else:
-                self._views["downloads"].append(msg)
-                self._statusbar.config(text=msg[:120])
+            elif item[0] == "log":
+                _, msg, tag = item
+                self.console.log(msg, tag)
+                self._status.configure(text=msg[:120])
         self.after(250, self._drain)
 
 
